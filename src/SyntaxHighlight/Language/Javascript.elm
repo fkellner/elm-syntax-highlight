@@ -32,7 +32,7 @@ type Syntax
     | ClassExtends
 
 
-toLines : String -> Result (List DeadEnd) (List Line)
+toLines : String -> Result (List DeadEnd) (List (Line msg))
 toLines =
     Parser.run toRevTokens
         >> Result.map (Line.toLines syntaxToStyle)
