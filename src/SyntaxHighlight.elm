@@ -55,14 +55,14 @@ import SyntaxHighlight.View as View
 
 {-| A highlighted code.
 -}
-type HCode
-    = HCode (List Line)
+type HCode msg
+    = HCode (List (Line msg))
 
 
 {-| Transform a highlighted code into a Html block.
 The `Maybe Int` argument is for showing or not line count and, if so, starting from what number.
 -}
-toBlockHtml : Maybe Int -> HCode -> Html msg
+toBlockHtml : Maybe Int -> HCode msg -> Html msg
 toBlockHtml maybeStart (HCode lines) =
     View.toBlockHtml maybeStart lines
 
@@ -83,21 +83,21 @@ toBlockHtml maybeStart (HCode lines) =
             ]
 
 -}
-toInlineHtml : HCode -> Html msg
+toInlineHtml : HCode msg -> Html msg
 toInlineHtml (HCode lines) =
     View.toInlineHtml lines
 
 
 {-| Transform a highlighted code into a static (pure text) Html block. The `Maybe Int` argument is for showing or not line count and, if so, starting from what number.
 -}
-toStaticBlockHtml : Maybe Int -> HCode -> String
+toStaticBlockHtml : Maybe Int -> HCode msg -> String
 toStaticBlockHtml maybeStart (HCode lines) =
     View.toStaticBlockHtml maybeStart lines
 
 
 {-| Transform a highlighted code into static (pure text) inline Html.
 -}
-toStaticInlineHtml : HCode -> String
+toStaticInlineHtml : HCode msg -> String
 toStaticInlineHtml (HCode lines) =
     View.toStaticInlineHtml lines
 
@@ -105,7 +105,7 @@ toStaticInlineHtml (HCode lines) =
 {-| Transform a highlighted code into a list of console highlighted strings given the styling options defined by `ConsoleOptions`.
 Each string in the list is a line.
 -}
-toConsole : ConsoleOptions -> HCode -> List String
+toConsole : ConsoleOptions -> HCode msg -> List String
 toConsole options (HCode lines) =
     View.toConsole options lines
 
@@ -147,7 +147,7 @@ type alias ConsoleOptions =
 
 {-| Parse Elm syntax.
 -}
-elm : String -> Result (List Parser.DeadEnd) HCode
+elm : String -> Result (List Parser.DeadEnd) (HCode msg)
 elm =
     Elm.toLines
         >> Result.map HCode
@@ -155,7 +155,7 @@ elm =
 
 {-| Parse XML syntax.
 -}
-xml : String -> Result (List Parser.DeadEnd) HCode
+xml : String -> Result (List Parser.DeadEnd) (HCode msg)
 xml =
     Xml.toLines
         >> Result.map HCode
@@ -163,7 +163,7 @@ xml =
 
 {-| Parse Javascript syntax.
 -}
-javascript : String -> Result (List Parser.DeadEnd) HCode
+javascript : String -> Result (List Parser.DeadEnd) (HCode msg)
 javascript =
     Javascript.toLines
         >> Result.map HCode
@@ -171,7 +171,7 @@ javascript =
 
 {-| Parse CSS syntax.
 -}
-css : String -> Result (List Parser.DeadEnd) HCode
+css : String -> Result (List Parser.DeadEnd) (HCode msg)
 css =
     Css.toLines
         >> Result.map HCode
@@ -179,7 +179,7 @@ css =
 
 {-| Parse Python syntax.
 -}
-python : String -> Result (List Parser.DeadEnd) HCode
+python : String -> Result (List Parser.DeadEnd) (HCode msg)
 python =
     Python.toLines
         >> Result.map HCode
@@ -187,7 +187,7 @@ python =
 
 {-| Parse SQL syntax.
 -}
-sql : String -> Result (List Parser.DeadEnd) HCode
+sql : String -> Result (List Parser.DeadEnd) (HCode msg)
 sql =
     Sql.toLines
         >> Result.map HCode
@@ -266,7 +266,7 @@ If no highlight type is given (`Nothing`), it will remove any
 highlight from the line range.
 Negative indexes are taken starting from the _end_ of the list.
 -}
-highlightLines : Maybe Highlight -> Int -> Int -> HCode -> HCode
+highlightLines : Maybe Highlight -> Int -> Int -> (HCode msg) -> (HCode msg)
 highlightLines maybeHighlight start end (HCode lines) =
     let
         maybeHighlight_ =

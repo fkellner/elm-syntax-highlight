@@ -5,13 +5,13 @@ import SyntaxHighlight.Line exposing (Fragment, Line)
 import SyntaxHighlight.Style as Style exposing (Required(..))
 
 
-toLines : (a -> ( Required, String )) -> List (Token a) -> List Line
+toLines : (a -> ( Required, String )) -> List (Token a) -> List (Line msg)
 toLines toStyle revTokens =
     List.foldl (toLinesHelp toStyle) ( [], [], Nothing ) revTokens
         |> (\( lines, frags, _ ) -> newLine frags :: lines)
 
 
-toLinesHelp : (a -> ( Required, String )) -> Token a -> ( List Line, List Fragment, Maybe (Syntax a) ) -> ( List Line, List Fragment, Maybe (Syntax a) )
+toLinesHelp : (a -> ( Required, String )) -> Token a -> ( List (Line msg), List (Fragment msg), Maybe (Syntax a) ) -> ( List (Line msg), List (Fragment msg), Maybe (Syntax a) )
 toLinesHelp toStyle ( syntax, text ) ( lines, fragments, maybeLastSyntax ) =
     if syntax == LineBreak then
         ( newLine fragments :: lines
@@ -42,25 +42,28 @@ toLinesHelp toStyle ( syntax, text ) ( lines, fragments, maybeLastSyntax ) =
         )
 
 
-toFragment : (a -> ( Required, String )) -> Token a -> Fragment
+toFragment : (a -> ( Required, String )) -> Token a -> (Fragment msg)
 toFragment toStyle ( syntax, text ) =
     case syntax of
         Normal ->
             { text = text
             , requiredStyle = Default
             , additionalClass = ""
+            , additionalAttributes = []
             }
 
         T.Comment ->
             { text = text
             , requiredStyle = Style.Comment
             , additionalClass = ""
+            , additionalAttributes = []
             }
 
         LineBreak ->
             { text = text
             , requiredStyle = Default
             , additionalClass = ""
+            , additionalAttributes = []
             }
 
         C c ->
@@ -71,10 +74,11 @@ toFragment toStyle ( syntax, text ) =
             { text = text
             , requiredStyle = requiredStyle
             , additionalClass = additionalClass
+            , additionalAttributes = []
             }
 
 
-newLine : List Fragment -> Line
+newLine : List (Fragment msg) -> (Line msg)
 newLine fragments =
     { fragments = fragments
     , highlight = Nothing
