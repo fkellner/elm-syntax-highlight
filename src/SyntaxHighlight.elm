@@ -1,5 +1,5 @@
 module SyntaxHighlight exposing
-    ( HCode
+    ( HCode(..)
     , toBlockHtml, toInlineHtml, toStaticBlockHtml, toStaticInlineHtml
     , Highlight(..), highlightLines
     , css, elm, javascript, python, sql, xml
