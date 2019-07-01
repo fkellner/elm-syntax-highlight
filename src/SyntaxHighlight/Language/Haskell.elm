@@ -2,7 +2,8 @@ module SyntaxHighlight.Language.Haskell exposing (..)
 
 {- State machine for language parsing -}
 {- type Rules = List State -}
-
+{- import Regex as R -}
+import Regex
 
 type State = State
   { patterns: List Pattern
@@ -15,39 +16,107 @@ type alias Token = List String
 type Pattern
   = CircularPattern
     { token: Token
-    , regex: Regex
+    , regex: RegexString
     }
   | NextPattern
     { token: Token
-    , regex: Regex
+    , regex: RegexString
     , next:  State
     }
   | PushPattern
     { token: Token
-    , regex: Regex
+    , regex: RegexString
     , push: AnonymousState
     }
+
+getRegex : Pattern -> RegexString
+getRegex pat = case pat of
+  CircularPattern {regex} -> regex
+  NextPattern {regex} -> regex
+  PushPattern {regex} -> regex
 
 type alias AnonymousState =
   { patterns: List Pattern
   , include: List State
   , default: Token
   , endToken: Token
-  , endRegex: Regex
+  , endRegex: RegexString
   }
 
-{- type alias CircularPattern = {
-    token: Token,
-    regex: Regex
+type alias RegexString = String
+
+nameState : State -> AnonymousState -> State
+nameState current pushState =
+  State
+    { patterns =
+        NextPattern
+          { token = pushState.endToken
+          , regex = pushState.endRegex
+          , next  = current
+          }
+        :: pushState.patterns
+    , include  = pushState.include
+    , default  = pushState.default
+    }
+
+type alias MachineToken =
+  { text: String
+  , tokens: List String
   }
 
-type alias NextPattern = {
-    token: Token,
-    regex: Regex,
-    next: State
-  } -}
+{-| returns tuple of expression matching string and rest of input -}
+eat : Maybe Regex.Regex -> String -> Maybe (String, String)
+eat mex st = case mex of
+  Just ex
+    ->  let
+          matches = Regex.findAtMost 1 ex st
+        in
+          case matches of
+            []                  -> Nothing
+            {match, index} :: _ ->
+              if index == 0 then
+                Just (match, (Regex.replaceAtMost 1 ex (\_ -> "") st))
+              else
+                Nothing
+  Nothing
+    -> Nothing
 
-type alias Regex = String
+
+runMachine : State -> String -> List MachineToken
+runMachine state rest = if (String.isEmpty rest) then [] else
+  case (advanceStep state rest) of
+    (newState, newRest, token) -> token :: (runMachine newState newRest)
+
+advanceStep : State -> String -> (State, String, MachineToken)
+advanceStep (State state) rest =
+  let
+    expandedPatterns : List Pattern
+    expandedPatterns =
+      state.patterns ++ List.concatMap (\(State s) -> s.patterns) state.include
+
+    tryPatterns : List Pattern -> (State, String, MachineToken)
+    tryPatterns pat =
+      case pat of
+        []      -> (State state, "", { text = rest, tokens = state.default })
+        x :: xs ->
+          case matchPattern x of
+            Just (s, r, t) -> (s, r, t)
+            Nothing        -> tryPatterns xs
+
+    matchPattern : Pattern -> Maybe (State, String, MachineToken)
+    matchPattern p =
+      eat (Regex.fromString (getRegex p)) rest
+        |> Maybe.map (\(part, rst) ->
+          case p of
+            CircularPattern {token}
+              -> (State state, rst, MachineToken part token)
+            NextPattern {token, next}
+              -> (next, rst, MachineToken part token)
+            PushPattern {token, push}
+              -> (nameState (State state) push, rst, MachineToken part token))
+
+  in
+    tryPatterns expandedPatterns
 
 {- Has to be filled in for every language -}
 module_name : State
@@ -310,6 +379,3 @@ start = State
       ]
   , default = [""]
   }
-
-patLen : State -> Int
-patLen (State {patterns}) = List.length patterns
