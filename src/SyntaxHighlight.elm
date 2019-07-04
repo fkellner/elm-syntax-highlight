@@ -2,7 +2,7 @@ module SyntaxHighlight exposing
     ( HCode
     , toBlockHtml, toInlineHtml, toStaticBlockHtml, toStaticInlineHtml
     , Highlight(..), highlightLines
-    , css, elm, javascript, python, sql, xml
+    , css, elm, javascript, python, sql, xml, haskell
     , Theme, useTheme, monokai, gitHub, oneDark
     , ConsoleOptions, toConsole
     )
@@ -44,6 +44,7 @@ import Html exposing (Html, text)
 import Parser
 import SyntaxHighlight.Language.Css as Css
 import SyntaxHighlight.Language.Elm as Elm
+import SyntaxHighlight.Language.Haskell as Haskell
 import SyntaxHighlight.Language.Javascript as Javascript
 import SyntaxHighlight.Language.Python as Python
 import SyntaxHighlight.Language.Sql as Sql
@@ -190,6 +191,13 @@ python =
 sql : String -> Result (List Parser.DeadEnd) HCode
 sql =
     Sql.toLines
+        >> Result.map HCode
+
+{-| Parse SQL syntax.
+-}
+haskell : String -> Result (List Parser.DeadEnd) (HCode msg)
+haskell =
+    Haskell.toLines
         >> Result.map HCode
 
 
