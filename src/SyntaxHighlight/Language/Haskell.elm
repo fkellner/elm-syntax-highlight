@@ -1,15 +1,19 @@
 module SyntaxHighlight.Language.Haskell exposing (..)
 
-{- State machine for language parsing -}
-{- type Rules = List State -}
-{- import Regex as R -}
 import Regex
+import SyntaxHighlight.Language.Type as T
+
+{-| State machine for language parsing
+  | This tries to implement the internal mechanism that the ace9-code-editor
+    uses in order to be able to use the state machines created for that
+    environment -}
 
 type State = State
   { patterns: List Pattern
   , include:  List State
   , default:  Token
   }
+{- Note: a simple type alias will not work because the type is recursive -}
 
 type alias Token = List String
 
@@ -118,47 +122,16 @@ advanceStep (State state) rest =
   in
     tryPatterns expandedPatterns
 
+{- convert from ace9 strings to elmsh Tokens-}
+type alias Token =
+    T.Token Syntax
+
+
+type Syntax
+    = KeywordOperator
+    | LanguageConstant
+
 {- Has to be filled in for every language -}
-module_name : State
-module_name = State
-  { patterns = []
-  , include = []
-  , default = [""]
-  }
-module_exports : State
-module_exports = State
-  { patterns = []
-  , include = []
-  , default = [""]
-  }
-
-type_signature : State
-type_signature = State
-  { patterns = []
-  , include = []
-  , default = [""]
-  }
-
-pragma : State
-pragma = State
-  { patterns = []
-  , include = []
-  , default = [""]
-  }
-
-comments : State
-comments = State
-  { patterns = []
-  , include = []
-  , default = [""]
-  }
-
-infix_op : State
-infix_op = State
-  { patterns = []
-  , include = []
-  , default = [""]
-  }
 
 start : State
 start = State
@@ -377,5 +350,46 @@ start = State
       , comments
       , infix_op
       ]
+  , default = [""]
+  }
+
+module_name : State
+module_name = State
+  { patterns = []
+  , include = []
+  , default = [""]
+  }
+module_exports : State
+module_exports = State
+  { patterns = []
+  , include = []
+  , default = [""]
+  }
+
+type_signature : State
+type_signature = State
+  { patterns = []
+  , include = []
+  , default = [""]
+  }
+
+pragma : State
+pragma = State
+  { patterns = []
+  , include = []
+  , default = [""]
+  }
+
+comments : State
+comments = State
+  { patterns = []
+  , include = []
+  , default = [""]
+  }
+
+infix_op : State
+infix_op = State
+  { patterns = []
+  , include = []
   , default = [""]
   }
