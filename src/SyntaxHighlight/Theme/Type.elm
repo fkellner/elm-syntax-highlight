@@ -2,6 +2,7 @@ module SyntaxHighlight.Theme.Type exposing (Syntax(..), Theme, syntaxToSelector,
 
 import SyntaxHighlight.Language.Css as Css
 import SyntaxHighlight.Language.Elm as Elm
+import SyntaxHighlight.Language.Haskell as Haskell
 import SyntaxHighlight.Language.Javascript as Javascript
 import SyntaxHighlight.Language.Python as Python
 import SyntaxHighlight.Language.Sql as Sql
@@ -22,6 +23,7 @@ type Syntax
     | Css Css.Syntax
     | Python Python.Syntax
     | Sql Sql.Syntax
+    | Haskell Haskell.Syntax
 
 
 toCss : Theme -> String
@@ -76,4 +78,8 @@ syntaxToSelector syntax =
 
         Sql sqlSyntax ->
             Sql.syntaxToStyle sqlSyntax
+                |> Tuple.second
+
+        Haskell haskellSyntax ->
+            Haskell.syntaxToStyle haskellSyntax
                 |> Tuple.second

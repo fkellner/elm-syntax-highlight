@@ -1,381 +1,646 @@
-module SyntaxHighlight.Language.Haskell exposing (..)
+module SyntaxHighlight.Language.Haskell exposing
+    ( Syntax(..)
+    ,  syntaxToStyle
+       -- Exposing for tests purpose
 
-{- State machine for language parsing -}
-{- type Rules = List State -}
-{- import Regex as R -}
-import Regex
+    , toLines
+    , toRevTokens
+    )
 
-type State = State
-  { patterns: List Pattern
-  , include:  List State
-  , default:  Token
-  }
+import Char
+import Parser exposing ((|.), DeadEnd, Parser, Step(..), andThen, backtrackable, chompIf, getChompedString, keyword, loop, map, oneOf, succeed, symbol)
+import Set exposing (Set)
+import SyntaxHighlight.Language.Helpers exposing (Delimiter, chompIfThenWhile, delimited, escapable, isEscapable, isLineBreak, isSpace, isWhitespace, number, thenChompWhile)
+import SyntaxHighlight.Language.Type as T
+import SyntaxHighlight.Line exposing (Line)
+import SyntaxHighlight.Line.Helpers as Line
+import SyntaxHighlight.Style as Style exposing (Required(..))
 
-type alias Token = List String
 
-type Pattern
-  = CircularPattern
-    { token: Token
-    , regex: RegexString
+type alias Token =
+    T.Token Syntax
+
+
+type Syntax
+    = String
+    | BasicSymbol
+    | GroupSymbol
+    | Capitalized
+    | Keyword
+    | Function
+    | TypeSignature
+    | Number
+
+
+toLines : String -> Result (List DeadEnd) (List (Line msg))
+toLines =
+    Parser.run toRevTokens
+        >> Result.map (Line.toLines syntaxToStyle)
+
+
+toRevTokens : Parser (List Token)
+toRevTokens =
+    loop [] mainLoop
+
+
+mainLoop : List Token -> Parser (Step (List Token) (List Token))
+mainLoop revTokens =
+    oneOf
+        [ space
+            |> map (\n -> Loop (n :: revTokens))
+        , lineBreak
+            |> map (\n -> Loop (n :: revTokens))
+        , comment
+            |> map (\n -> Loop (n ++ revTokens))
+        , variable
+            |> andThen (lineStartVariable revTokens)
+            |> map Loop
+        , stringLiteral
+            |> andThen (\s -> loop (s ++ revTokens) functionBody)
+            |> map Loop
+        , functionBodyContent
+            |> andThen (\s -> loop (s :: revTokens) functionBody)
+            |> map Loop
+        , succeed (Done revTokens)
+        ]
+
+
+lineStartVariable : List Token -> String -> Parser (List Token)
+lineStartVariable revTokens n =
+    if n == "module" then
+        moduleDeclaration
+            |> loop (( T.C Keyword, n ) :: revTokens)
+
+    else if n == "import" then
+        importDeclaration
+            |> loop ((T.C Keyword, n) :: revTokens)
+
+    else if isKeyword n then
+        functionBody
+            |> loop (( T.C Keyword, n ) :: revTokens)
+
+    else
+        functionSignature
+            |> loop (( T.C Function, n ) :: revTokens)
+
+
+
+-- Module Declaration
+
+
+moduleDeclaration : List Token -> Parser (Step (List Token) (List Token))
+moduleDeclaration revTokens =
+    oneOf
+        [ whitespaceOrCommentStep revTokens
+        , symbol "("
+            |> map (always (( T.Normal, "(" ) :: revTokens))
+            |> andThen (\n -> loop n modDecParentheses)
+            |> map Loop
+        , oneOf
+            [ commentChar
+                |> map (\b -> ( T.Normal, b ))
+            , keyword "where"
+                |> map (always ( T.C Keyword, "where" ))
+            , chompIfThenWhile modDecIsNotRelevant
+                |> getChompedString
+                |> map (\b -> ( T.Normal, b ))
+            ]
+            |> map (\n -> Loop (n :: revTokens))
+        , succeed (Done revTokens)
+        ]
+
+
+modDecIsNotRelevant : Char -> Bool
+modDecIsNotRelevant c =
+    not (isWhitespace c || isCommentChar c || c == '(')
+
+
+modDecParentheses : List Token -> Parser (Step (List Token) (List Token))
+modDecParentheses revTokens =
+    oneOf
+        [ whitespaceOrCommentStep revTokens
+        , symbol ")"
+            |> map (always (( T.Normal, ")" ) :: revTokens))
+            |> map Done
+        , oneOf
+            [ infixParser
+            , commentChar |> map (\b -> ( T.Normal, b ))
+            , chompIfThenWhile (\c -> c == ',' || c == '.')
+                |> getChompedString
+                |> map (\b -> ( T.Normal, b ))
+            , chompIf Char.isUpper
+                |> thenChompWhile mdpIsNotRelevant
+                |> getChompedString
+                |> map (\b -> ( T.C TypeSignature, b ))
+            , chompIfThenWhile mdpIsNotRelevant
+                |> getChompedString
+                |> map (\b -> ( T.C Function, b ))
+            ]
+            |> map (\n -> Loop (n :: revTokens))
+        , symbol "("
+            |> map (always (( T.Normal, "(" ) :: revTokens))
+            |> andThen (\n -> loop ( 0, n ) modDecParNest)
+            |> map Loop
+        , succeed (Done revTokens)
+        ]
+
+
+mdpIsNotRelevant : Char -> Bool
+mdpIsNotRelevant c =
+    not (isWhitespace c || isCommentChar c || c == '(' || c == ')' || c == ',' || c == '.')
+
+
+modDecParNest : ( Int, List Token ) -> Parser (Step ( Int, List Token ) (List Token))
+modDecParNest ( nestLevel, revTokens ) =
+    oneOf
+        [ whitespaceOrCommentStepNested ( nestLevel, revTokens )
+        , symbol "("
+            |> map (always (( T.Normal, "(" ) :: revTokens))
+            |> map (\ns -> Loop ( nestLevel + 1, ns ))
+        , symbol ")"
+            |> map (always (( T.Normal, ")" ) :: revTokens))
+            |> map
+                (\ns ->
+                    if nestLevel == 0 then
+                        Done ns
+
+                    else
+                        Loop ( nestLevel - 1, ns )
+                )
+        , oneOf
+            [ commentChar |> map (\b -> ( T.Normal, b ))
+            , chompIfThenWhile (not << mdpnIsSpecialChar)
+                |> getChompedString
+                |> map (\s -> ( T.Normal, s ))
+            ]
+            |> map (\n -> Loop ( nestLevel, n :: revTokens ))
+        , succeed (Done revTokens)
+        ]
+
+
+mdpnIsSpecialChar : Char -> Bool
+mdpnIsSpecialChar c =
+    isLineBreak c || isCommentChar c || c == '(' || c == ')'
+
+
+-- Import declaration
+importDeclaration : List Token -> Parser (Step (List Token) (List Token))
+importDeclaration revTokens =
+    oneOf
+        [ whitespaceOrCommentStep revTokens
+        , symbol "("
+            |> map (always (( T.Normal, "(" ) :: revTokens))
+            |> andThen (\n -> loop n modDecParentheses)
+            |> map Loop
+        , oneOf
+            [ commentChar
+                |> map (\b -> ( T.Normal, b ))
+            , keyword "hiding"
+                |> map (always ( T.C Keyword, "hiding" ))
+            , chompIfThenWhile modDecIsNotRelevant
+                |> getChompedString
+                |> map (\b -> ( T.Normal, b ))
+            ]
+            |> map (\n -> Loop (n :: revTokens))
+        , succeed (Done revTokens)
+        ]
+
+
+
+-- Function Signature
+
+
+functionSignature : List Token -> Parser (Step (List Token) (List Token))
+functionSignature revTokens =
+    oneOf
+        [ symbol "::"
+            |> map (always (( T.C BasicSymbol, "::" ) :: revTokens))
+            |> andThen (\ns -> loop ns fnSigContent)
+            |> map Done
+        , whitespaceOrCommentStep revTokens
+        , loop revTokens functionBody
+            |> map Done
+        , succeed (Done revTokens)
+        ]
+
+
+fnSigContent : List Token -> Parser (Step (List Token) (List Token))
+fnSigContent revTokens =
+    oneOf
+        [ whitespaceOrCommentStep revTokens
+        , fnSigContentHelp
+            |> map (\n -> Loop (n :: revTokens))
+        , succeed (Done revTokens)
+        ]
+
+
+fnSigContentHelp : Parser Token
+fnSigContentHelp =
+    oneOf
+        [ symbol "()" |> map (always ( T.C TypeSignature, "()" ))
+        , symbol "->" |> map (always ( T.C BasicSymbol, "->" ))
+        , chompIfThenWhile (\c -> c == '(' || c == ')' || c == '-' || c == ',')
+            |> getChompedString
+            |> map (\b -> ( T.Normal, b ))
+        , chompIf Char.isUpper
+            |> thenChompWhile fnSigIsNotRelevant
+            |> getChompedString
+            |> map (\b -> ( T.C TypeSignature, b ))
+        , chompIfThenWhile fnSigIsNotRelevant
+            |> getChompedString
+            |> map (\b -> ( T.Normal, b ))
+        ]
+
+
+fnSigIsNotRelevant : Char -> Bool
+fnSigIsNotRelevant c =
+    not (isWhitespace c || c == '(' || c == ')' || c == '-' || c == ',')
+
+
+
+-- Function Body
+
+
+functionBody : List Token -> Parser (Step (List Token) (List Token))
+functionBody revTokens =
+    oneOf
+        [ whitespaceOrCommentStep revTokens
+        , stringLiteral
+            |> map (\ns -> Loop (ns ++ revTokens))
+        , functionBodyContent
+            |> map (\n -> Loop (n :: revTokens))
+        , succeed (Done revTokens)
+        ]
+
+
+functionBodyContent : Parser Token
+functionBodyContent =
+    oneOf
+        [ number
+            |> getChompedString
+            |> map (\b -> ( T.C Number, b ))
+        , symbol "()" |> map (always ( T.C Capitalized, "()" ))
+        , infixParser
+        , basicSymbol |> map (\b -> ( T.C BasicSymbol, b ))
+        , groupSymbol |> map (\b -> ( T.C GroupSymbol, b ))
+        , capitalized |> map (\b -> ( T.C Capitalized, b ))
+        , variable
+            |> map
+                (\n ->
+                    if isKeyword n then
+                        ( T.C Keyword, n )
+
+                    else
+                        ( T.Normal, n )
+                )
+        , weirdText |> map (\b -> ( T.Normal, b ))
+        ]
+
+
+isKeyword : String -> Bool
+isKeyword str =
+    Set.member str keywordSet
+
+
+keywordSet : Set String
+keywordSet =
+    Set.fromList
+        [ "as"
+        , "where"
+        , "let"
+        , "in"
+        , "if"
+        , "else"
+        , "then"
+        , "case"
+        , "of"
+        , "type"
+        , "alias"
+        ]
+
+
+basicSymbol : Parser String
+basicSymbol =
+    chompIfThenWhile isBasicSymbol
+        |> getChompedString
+
+
+isBasicSymbol : Char -> Bool
+isBasicSymbol c =
+    Set.member c basicSymbols
+
+
+basicSymbols : Set Char
+basicSymbols =
+    Set.fromList
+        [ '|'
+        , '.'
+        , '='
+        , '\\'
+        , '/'
+        , '('
+        , ')'
+        , '-'
+        , '>'
+        , '<'
+        , ':'
+        , '+'
+        , '!'
+        , '$'
+        , '%'
+        , '&'
+        , '*'
+        ]
+
+
+groupSymbol : Parser String
+groupSymbol =
+    chompIfThenWhile isGroupSymbol
+        |> getChompedString
+
+
+isGroupSymbol : Char -> Bool
+isGroupSymbol c =
+    Set.member c groupSymbols
+
+
+groupSymbols : Set Char
+groupSymbols =
+    Set.fromList
+        [ ','
+        , '['
+        , ']'
+        , '{'
+        , '}'
+        ]
+
+
+capitalized : Parser String
+capitalized =
+    chompIf Char.isUpper
+        |> thenChompWhile isVariableChar
+        |> getChompedString
+
+
+variable : Parser String
+variable =
+    chompIf Char.isLower
+        |> thenChompWhile isVariableChar
+        |> getChompedString
+
+
+isVariableChar : Char -> Bool
+isVariableChar c =
+    not
+        (isWhitespace c
+            || isBasicSymbol c
+            || isGroupSymbol c
+            || isStringLiteralChar c
+        )
+
+
+weirdText : Parser String
+weirdText =
+    chompIfThenWhile isVariableChar
+        |> getChompedString
+
+
+
+-- Infix
+
+
+infixParser : Parser Token
+infixParser =
+    (getChompedString <|
+        succeed ()
+            |. backtrackable (symbol "(")
+            |. backtrackable (chompIfThenWhile isInfixChar)
+            |. backtrackable (symbol ")")
+    )
+        |> map (\b -> ( T.C Function, b ))
+
+
+isInfixChar : Char -> Bool
+isInfixChar c =
+    Set.member c infixSet
+
+
+infixSet : Set Char
+infixSet =
+    Set.fromList
+        [ '+'
+        , '-'
+        , '/'
+        , '*'
+        , '='
+        , '.'
+        , '$'
+        , '<'
+        , '>'
+        , ':'
+        , '&'
+        , '|'
+        , '^'
+        , '?'
+        , '%'
+        , '#'
+        , '@'
+        , '~'
+        , '!'
+        , ','
+        ]
+
+
+
+-- String/Char literals
+
+
+stringLiteral : Parser (List Token)
+stringLiteral =
+    oneOf
+        [ tripleDoubleQuote
+        , doubleQuote
+        , quote
+        ]
+
+
+doubleQuote : Parser (List Token)
+doubleQuote =
+    delimited stringDelimiter
+
+
+stringDelimiter : Delimiter Token
+stringDelimiter =
+    { start = "\""
+    , end = "\""
+    , isNestable = False
+    , defaultMap = \b -> ( T.C String, b )
+    , innerParsers = [ lineBreakList, elmEscapable ]
+    , isNotRelevant = \c -> not (isLineBreak c || isEscapable c)
     }
-  | NextPattern
-    { token: Token
-    , regex: RegexString
-    , next:  State
-    }
-  | PushPattern
-    { token: Token
-    , regex: RegexString
-    , push: AnonymousState
-    }
-
-getRegex : Pattern -> RegexString
-getRegex pat = case pat of
-  CircularPattern {regex} -> regex
-  NextPattern {regex} -> regex
-  PushPattern {regex} -> regex
-
-type alias AnonymousState =
-  { patterns: List Pattern
-  , include: List State
-  , default: Token
-  , endToken: Token
-  , endRegex: RegexString
-  }
-
-type alias RegexString = String
-
-nameState : State -> AnonymousState -> State
-nameState current pushState =
-  State
-    { patterns =
-        NextPattern
-          { token = pushState.endToken
-          , regex = pushState.endRegex
-          , next  = current
-          }
-        :: pushState.patterns
-    , include  = pushState.include
-    , default  = pushState.default
-    }
-
-type alias MachineToken =
-  { text: String
-  , tokens: List String
-  }
-
-{-| returns tuple of expression matching string and rest of input -}
-eat : Maybe Regex.Regex -> String -> Maybe (String, String)
-eat mex st = case mex of
-  Just ex
-    ->  let
-          matches = Regex.findAtMost 1 ex st
-        in
-          case matches of
-            []                  -> Nothing
-            {match, index} :: _ ->
-              if index == 0 then
-                Just (match, (Regex.replaceAtMost 1 ex (\_ -> "") st))
-              else
-                Nothing
-  Nothing
-    -> Nothing
 
 
-runMachine : State -> String -> List MachineToken
-runMachine state rest = if (String.isEmpty rest) then [] else
-  case (advanceStep state rest) of
-    (newState, newRest, token) -> token :: (runMachine newState newRest)
+tripleDoubleQuote : Parser (List Token)
+tripleDoubleQuote =
+    delimited
+        { stringDelimiter
+            | start = "\"\"\""
+            , end = "\"\"\""
+        }
 
-advanceStep : State -> String -> (State, String, MachineToken)
-advanceStep (State state) rest =
-  let
-    expandedPatterns : List Pattern
-    expandedPatterns =
-      state.patterns ++ List.concatMap (\(State s) -> s.patterns) state.include
 
-    tryPatterns : List Pattern -> (State, String, MachineToken)
-    tryPatterns pat =
-      case pat of
-        []      -> (State state, "", { text = rest, tokens = state.default })
-        x :: xs ->
-          case matchPattern x of
-            Just (s, r, t) -> (s, r, t)
-            Nothing        -> tryPatterns xs
+quote : Parser (List Token)
+quote =
+    delimited
+        { stringDelimiter
+            | start = "'"
+            , end = "'"
+        }
 
-    matchPattern : Pattern -> Maybe (State, String, MachineToken)
-    matchPattern p =
-      eat (Regex.fromString (getRegex p)) rest
-        |> Maybe.map (\(part, rst) ->
-          case p of
-            CircularPattern {token}
-              -> (State state, rst, MachineToken part token)
-            NextPattern {token, next}
-              -> (next, rst, MachineToken part token)
-            PushPattern {token, push}
-              -> (nameState (State state) push, rst, MachineToken part token))
 
-  in
-    tryPatterns expandedPatterns
+isStringLiteralChar : Char -> Bool
+isStringLiteralChar c =
+    c == '"' || c == '\''
 
-{- Has to be filled in for every language -}
-module_name : State
-module_name = State
-  { patterns = []
-  , include = []
-  , default = [""]
-  }
-module_exports : State
-module_exports = State
-  { patterns = []
-  , include = []
-  , default = [""]
-  }
 
-type_signature : State
-type_signature = State
-  { patterns = []
-  , include = []
-  , default = [""]
-  }
 
-pragma : State
-pragma = State
-  { patterns = []
-  , include = []
-  , default = [""]
-  }
+-- Comments
 
-comments : State
-comments = State
-  { patterns = []
-  , include = []
-  , default = [""]
-  }
 
-infix_op : State
-infix_op = State
-  { patterns = []
-  , include = []
-  , default = [""]
-  }
+comment : Parser (List Token)
+comment =
+    oneOf
+        [ inlineComment
+        , multilineComment
+        ]
 
-start : State
-start = State
-  { patterns =
-      [ CircularPattern
-          { token =
-              [ "punctuation.definition.entity.haskell"
-              , "keyword.operator.function.infix.haskell"
-              , "punctuation.definition.entity.haskell"
-              ]
-          , regex = "(`)([a-zA-Z_']*?)(`)"
-            {- comment: "In case this regex seems unusual for an infix operator, note that Haskell allows any ordinary function application (elem 4 [1..10]) to be rewritten as an infix expression (4 `elem` [1..10])."-}
-          }
-      , CircularPattern
-          { token = ["constant.language.unit.haskell"]
-          , regex = "\\(\\)"
-          }
-      , CircularPattern
-          { token = ["constant.language.empty-list.haskell"]
-          , regex = "\\[\\]"
-          }
-      , PushPattern
-          { token = ["keyword.other.haskell"]
-          , regex = "\\b(module|signature)\\b"
-          , push =
-              { patterns =
-                  [ CircularPattern {
-                      token = ["invalid"],
-                      regex = "[a-z]+"
-                    }
-                  ]
-              , include =
-                  [ module_name
-                  , module_exports
-                  ]
-              , default = ["meta.declaration.module.haskell"]
-              , endToken = ["keyword.other.haskell"]
-              , endRegex = "\\bwhere\\b"
-              }
-          }
-      , PushPattern
-          { token = ["keyword.other.haskell"]
-          , regex = "\\bclass\\b"
-          , push =
-              { patterns =
-                  [ CircularPattern
-                      { token = ["support.class.prelude.haskell"]
-                      , regex = "\\b(?:Monad|Functor|Eq|Ord|Read|Show|Num|(?:Frac|Ra)tional|Enum|Bounded|Real(?:Frac|Float)?|Integral|Floating)\\b"
-                      }
-                  , CircularPattern
-                      { token = ["entity.other.inherited-class.haskell"]
-                      , regex = "[A-Z][A-Za-z_']*"
-                      }
-                  , CircularPattern
-                      { token = ["variable.other.generic-type.haskell"]
-                      , regex = "\\b[a-z][a-zA-Z0-9_']*\\b"
-                      }
-                  ]
-              , default = ["meta.declaration.class.haskell"]
-              , endToken = ["keyword.other.haskell"]
-              , endRegex = "\\bwhere\\b"
-              , include = []
-              }
-          }
-      , PushPattern
-          { token = ["keyword.other.haskell"]
-          , regex = "\\binstance\\b"
-          , push =
-              { patterns = []
-              , default = ["meta.declaration.instance.haskell"]
-              , endToken = ["keyword.other.haskell"]
-              , endRegex = "\\bwhere\\b|$"
-              , include = [type_signature]
-              }
-          }
-      , PushPattern
-          { token = ["keyword.other.haskell"]
-          , regex = "import"
-          , push =
-            { patterns =
-              [ CircularPattern
-                { token = ["keyword.other.haskell"]
-                , regex = "qualified|as|hiding"
-                }
-              ]
-            , default = ["meta.import.haskell"]
-            , endToken = ["meta.import.haskell"]
-            , endRegex = "$|;|^"
-            , include =
-              [ module_name
-              , module_exports
-              ]
-            }
-          }
-      , PushPattern
-          { token = [ "keyword.other.haskell", "meta.deriving.haskell" ]
-          , regex = "(deriving)(\\s*\\()"
-          , push =
-            { patterns =
-              [ CircularPattern
-                  { token = ["entity.other.inherited-class.haskell"]
-                  , regex = "\\b[A-Z][a-zA-Z_']*"
-                  }
-              ]
-            , default = ["meta.deriving.haskell"]
-            , endToken = ["meta.deriving.haskell"]
-            , endRegex = "\\)"
-            , include = []
-            }
-          }
-      , CircularPattern
-          { token = ["keyword.other.haskell"]
-          , regex = "\\b(?:deriving|where|data|type|case|of|let|in|newtype|default)\\b"
-          }
-      , CircularPattern
-          { token = ["keyword.operator.haskell"]
-          , regex = "\\binfix[lr]?\\b"
-          }
-      , CircularPattern
-          { token = ["keyword.control.haskell"]
-          , regex = "\\b(?:do|if|then|else)\\b"
-          }
-      , CircularPattern
-          { token = ["constant.numeric.float.haskell"]
-          , regex = "\\b(?:[0-9]+\\.[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+)\\b"
-            {- comment = "Floats are always decimal"-}
-          }
-      , CircularPattern
-          { token = ["constant.numeric.haskell"]
-          ,  regex = "\\b(?:[0-9]+|0(?:[xX][0-9a-fA-F]+|[oO][0-7]+))\\b"
-          }
-      , CircularPattern
-          { token =
-             [ "meta.preprocessor.c"
-             , "punctuation.definition.preprocessor.c"
-             , "meta.preprocessor.c"
-             ]
-          , regex = "^(\\s*)(#)(\\s*\\w+)"
-          {-  comment = "In addition to Haskell's \"native\" syntax, GHC permits the C preprocessor to be run on a source file."-}
-          }
-      , PushPattern
-          { token = ["punctuation.definition.string.begin.haskell"],
-            regex = "\"",
-            push =
-              { patterns =
-                  [ CircularPattern
-                      { token = ["constant.character.escape.haskell"]
-                      , regex = "\\\\(?:NUL|SOH|STX|ETX|EOT|ENQ|ACK|BEL|BS|HT|LF|VT|FF|CR|SO|SI|DLE|DC1|DC2|DC3|DC4|NAK|SYN|ETB|CAN|EM|SUB|ESC|FS|GS|RS|US|SP|DEL|[abfnrtv\\\\\\\"'\\&])"
-                      }
-                  , CircularPattern
-                      { token = ["constant.character.escape.octal.haskell"]
-                      , regex = "\\\\o[0-7]+|\\\\x[0-9A-Fa-f]+|\\\\[0-9]+"
-                      }
-                  , CircularPattern
-                      { token = ["constant.character.escape.control.haskell"]
-                      , regex = "\\^[A-Z@\\[\\]\\\\\\^_]"
-                      }
-                  ]
-              , default = ["string.quoted.double.haskell"]
-              , endToken = ["punctuation.definition.string.end.haskell"]
-              , endRegex = "\""
-              , include = []
-              }
-          }
-      , CircularPattern
-          { token =
-             [ "punctuation.definition.string.begin.haskell"
-             , "string.quoted.single.haskell"
-             , "constant.character.escape.haskell"
-             , "constant.character.escape.octal.haskell"
-             , "constant.character.escape.hexadecimal.haskell"
-             , "constant.character.escape.control.haskell"
-             , "punctuation.definition.string.end.haskell"
-             ]
-          , regex = "(')(?:([\\ -\\[\\]-~])|(\\\\(?:NUL|SOH|STX|ETX|EOT|ENQ|ACK|BEL|BS|HT|LF|VT|FF|CR|SO|SI|DLE|DC1|DC2|DC3|DC4|NAK|SYN|ETB|CAN|EM|SUB|ESC|FS|GS|RS|US|SP|DEL|[abfnrtv\\\\\\\"'\\&]))|(\\\\o[0-7]+)|(\\\\x[0-9A-Fa-f]+)|(\\^[A-Z@\\[\\]\\\\\\^_]))(')"
-          }
-      , PushPattern
-          { token =
-             [ "meta.function.type-declaration.haskell"
-             , "entity.name.function.haskell"
-             , "meta.function.type-declaration.haskell"
-             , "keyword.other.double-colon.haskell"
-             ]
-          , regex = "^(\\s*)([a-z_][a-zA-Z0-9_']*|\\([|!%$+\\-.,=</>]+\\))(\\s*)(::)"
-          , push =
-              { patterns = []
-              , default = ["meta.function.type-declaration.haskell"]
-              , endToken = ["meta.function.type-declaration.haskell"]
-              , endRegex = "$"
-              , include = [type_signature]
-              }
-          }
-      , CircularPattern
-          { token = ["support.constant.haskell"]
-          , regex = "\\b(?:Just|Nothing|Left|Right|True|False|LT|EQ|GT|\\(\\)|\\[\\])\\b" }
-      , CircularPattern
-          { token = ["constant.other.haskell"]
-          , regex = "\\b[A-Z]\\w*\\b"
-          }
-      , CircularPattern
-          { token = ["support.function.prelude.haskell"]
-          , regex = "\\b(?:abs|acos|acosh|all|and|any|appendFile|applyM|asTypeOf|asin|asinh|atan|atan2|atanh|break|catch|ceiling|compare|concat|concatMap|const|cos|cosh|curry|cycle|decodeFloat|div|divMod|drop|dropWhile|elem|encodeFloat|enumFrom|enumFromThen|enumFromThenTo|enumFromTo|error|even|exp|exponent|fail|filter|flip|floatDigits|floatRadix|floatRange|floor|fmap|foldl|foldl1|foldr|foldr1|fromEnum|fromInteger|fromIntegral|fromRational|fst|gcd|getChar|getContents|getLine|head|id|init|interact|ioError|isDenormalized|isIEEE|isInfinite|isNaN|isNegativeZero|iterate|last|lcm|length|lex|lines|log|logBase|lookup|map|mapM|mapM_|max|maxBound|maximum|maybe|min|minBound|minimum|mod|negate|not|notElem|null|odd|or|otherwise|pi|pred|print|product|properFraction|putChar|putStr|putStrLn|quot|quotRem|read|readFile|readIO|readList|readLn|readParen|reads|readsPrec|realToFrac|recip|rem|repeat|replicate|return|reverse|round|scaleFloat|scanl|scanl1|scanr|scanr1|seq|sequence|sequence_|show|showChar|showList|showParen|showString|shows|showsPrec|significand|signum|sin|sinh|snd|span|splitAt|sqrt|subtract|succ|sum|tail|take|takeWhile|tan|tanh|toEnum|toInteger|toRational|truncate|uncurry|undefined|unlines|until|unwords|unzip|unzip3|userError|words|writeFile|zip|zip3|zipWith|zipWith3)\\b"
-          }
-      , CircularPattern
-          { token = ["keyword.operator.haskell"]
-          , regex = "[|!%$?~+:\\-.=</>\\\\]+"
-              {- comment = "In case this regex seems overly general, note that Haskell permits the definition of new operators which can be nearly any string of punctuation characters, such as $%^&*."-}
-          }
-      , CircularPattern
-          { token = ["punctuation.separator.comma.haskell"]
-          , regex = ","
-          }
-      ]
-  , include =
-      [ pragma
-      , comments
-      , infix_op
-      ]
-  , default = [""]
-  }
+
+inlineComment : Parser (List Token)
+inlineComment =
+    symbol "--"
+        |> thenChompWhile (not << isLineBreak)
+        |> getChompedString
+        |> map (\b -> [ ( T.Comment, b ) ])
+
+
+multilineComment : Parser (List Token)
+multilineComment =
+    delimited
+        { start = "{-"
+        , end = "-}"
+        , isNestable = True
+        , defaultMap = \b -> ( T.Comment, b )
+        , innerParsers = [ lineBreakList ]
+        , isNotRelevant = \c -> not (isLineBreak c)
+        }
+
+
+commentChar : Parser String
+commentChar =
+    chompIf isCommentChar
+        |> getChompedString
+
+
+isCommentChar : Char -> Bool
+isCommentChar c =
+    c == '-' || c == '{'
+
+
+
+-- Helpers
+
+
+whitespaceOrCommentStep : List Token -> Parser (Step (List Token) (List Token))
+whitespaceOrCommentStep revTokens =
+    oneOf
+        [ space
+            |> map (\n -> Loop (n :: revTokens))
+        , lineBreak
+            |> map (\n -> n :: revTokens)
+            |> andThen checkContext
+        , comment
+            |> map (\n -> Loop (n ++ revTokens))
+        ]
+
+
+checkContext : List Token -> Parser (Step (List Token) (List Token))
+checkContext revTokens =
+    oneOf
+        [ whitespaceOrCommentStep revTokens
+        , succeed (Done revTokens)
+        ]
+
+
+whitespaceOrCommentStepNested : ( Int, List Token ) -> Parser (Step ( Int, List Token ) (List Token))
+whitespaceOrCommentStepNested ( nestLevel, revTokens ) =
+    oneOf
+        [ space
+            |> map (\n -> Loop ( nestLevel, n :: revTokens ))
+        , lineBreak
+            |> map (\n -> ( nestLevel, n :: revTokens ))
+            |> andThen checkContextNested
+        , comment
+            |> map (\n -> Loop ( nestLevel, n ++ revTokens ))
+        ]
+
+
+checkContextNested : ( Int, List Token ) -> Parser (Step ( Int, List Token ) (List Token))
+checkContextNested ( nestLevel, revTokens ) =
+    oneOf
+        [ whitespaceOrCommentStepNested ( nestLevel, revTokens )
+        , succeed (Done revTokens)
+        ]
+
+
+space : Parser Token
+space =
+    chompIfThenWhile isSpace
+        |> getChompedString
+        |> map (\b -> ( T.Normal, b ))
+
+
+lineBreak : Parser Token
+lineBreak =
+    symbol "\n"
+        |> map (\_ -> ( T.LineBreak, "\n" ))
+
+
+lineBreakList : Parser (List Token)
+lineBreakList =
+    symbol "\n"
+        |> map (\_ -> [ ( T.LineBreak, "\n" ) ])
+
+
+elmEscapable : Parser (List Token)
+elmEscapable =
+    escapable
+        |> getChompedString
+        |> map (\b -> [ ( T.C Capitalized, b ) ])
+
+
+syntaxToStyle : Syntax -> ( Style.Required, String )
+syntaxToStyle syntax =
+    case syntax of
+        String ->
+            ( Style2, "elm-s" )
+
+        BasicSymbol ->
+            ( Style3, "elm-bs" )
+
+        GroupSymbol ->
+            ( Style4, "elm-gs" )
+
+        Capitalized ->
+            ( Style6, "elm-c" )
+
+        Keyword ->
+            ( Style3, "elm-k" )
+
+        Function ->
+            ( Style5, "elm-f" )
+
+        TypeSignature ->
+            ( Style4, "elm-ts" )
+
+        Number ->
+            ( Style1, "elm-n" )

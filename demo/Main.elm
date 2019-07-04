@@ -5,7 +5,7 @@ import Browser.Events exposing (onAnimationFrame)
 import Dict exposing (Dict)
 import Html exposing (Html, a, button, code, div, h1, input, label, li, node, option, p, pre, select, small, text, textarea, ul)
 import Html.Attributes exposing (checked, class, classList, href, id, placeholder, selected, spellcheck, style, type_, value)
-import Html.Events exposing (onCheck, onClick, onInput)
+import Html.Events exposing (onCheck, onClick, onInput, onMouseEnter)
 import Html.Lazy
 import Json.Decode as Json
 import Parser
@@ -36,6 +36,7 @@ type alias Model =
     , theme : String
     , customTheme : String
     , highlight : HighlightModel
+    , mouse : Bool
     }
 
 
@@ -50,6 +51,7 @@ initModel =
     , theme = "Monokai"
     , customTheme = rawMonokai
     , highlight = HighlightModel (Just SH.Add) 1 3
+    , mouse = False
     }
 
 
@@ -75,6 +77,7 @@ initLanguagesModel =
         , ( "Css", initLanguageModel cssExample )
         , ( "Python", initLanguageModel pythonExample )
         , ( "Sql", initLanguageModel sqlExample )
+        , ( "Haskell", initLanguageModel haskellExample )
         ]
 
 
@@ -217,6 +220,38 @@ SELECT a, b, m.*
    AND m.key is in ['key\\'1','key2'];
 """
 
+haskellExample : String
+haskellExample =
+    """mergesort :: Ord a => [a] -> [a]
+mergesort [] = []
+mergesort [x] = [x]
+mergesort l = merge (mergesort left) (mergesort right)
+    where size = div (length l) 2
+          (left, right) = splitAt size l
+
+merge :: Ord a => [a] -> [a] -> [a]
+merge ls [] = ls
+merge [] vs = vs
+merge first@(l:ls) second@(v:vs)
+    | l < v = l : merge ls second
+    | otherwise = v : merge first vs
+
+quicksort :: Ord a => [a] -> [a]
+quicksort [] = []
+quicksort [x] = [x]
+quicksort l = quicksort less ++ pivot:(quicksort greater)
+    where pivotIndex = div (length l) 2
+          pivot = l !! pivotIndex
+          [less, greater] = foldl addElem [[], []] $ enumerate l
+          addElem [less, greater] (index, elem)
+            | index == pivotIndex = [less, greater]
+            | elem < pivot = [elem:less, greater]
+            | otherwise = [less, elem:greater]
+
+enumerate :: [a] -> [(Int, a)]
+enumerate = zip [0..]
+"""
+
 
 
 -- Update
@@ -236,6 +271,7 @@ type Msg
     | SetHighlightStart Int
     | SetHighlightEnd Int
     | ApplyHighlight
+    | Mouse
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -243,6 +279,11 @@ update msg ({ highlight } as model) =
     case msg of
         NoOp ->
             ( model, Cmd.none )
+
+        Mouse ->
+            ( { model | mouse = True }
+            , Cmd.none
+            )
 
         SetText lang codeStr ->
             getLangModel lang model
@@ -372,7 +413,9 @@ view model =
         , viewLanguage "Css" toHtmlCss model
         , viewLanguage "Python" toHtmlPython model
         , viewLanguage "Sql" toHtmlSql model
+        , viewLanguage "Haskell" toHtmlHaskell model
         , viewOptions model
+        , p [] [ text (if model.mouse then "yes" else "no") ]
         ]
 
 
@@ -502,11 +545,31 @@ toHtmlSql : Maybe Int -> String -> HighlightModel -> Html Msg
 toHtmlSql =
     toHtml SH.sql
 
+toHtmlHaskell : Maybe Int -> String -> HighlightModel -> Html Msg
+toHtmlHaskell =
+    toHtml SH.haskell
 
-toHtml : (String -> Result (List Parser.DeadEnd) SH.HCode) -> Maybe Int -> String -> HighlightModel -> Html Msg
+
+toHtml : (String -> Result (List Parser.DeadEnd) (SH.HCode Msg)) -> Maybe Int -> String -> HighlightModel -> Html Msg
 toHtml parser maybeStart str hlModel =
     parser str
         |> Result.map (SH.highlightLines hlModel.mode hlModel.start hlModel.end)
+        |> Result.map
+          (\h -> case h of
+            SH.HCode lines -> lines
+              |> (List.map
+                    (\line -> { line | fragments = line.fragments
+                      |> List.map
+                          (\f ->
+                            if False then
+                              {f | additionalAttributes = [ style "background-color" "rgba(0,0,0,1)", onClick Mouse ] }
+                            else f
+                          )
+                        }
+                    )
+                  )
+              |> SH.HCode
+          )
         |> Result.map (SH.toBlockHtml maybeStart)
         |> Result.mapError Parser.deadEndsToString
         |> (\result ->
