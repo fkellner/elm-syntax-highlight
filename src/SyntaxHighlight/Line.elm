@@ -15,22 +15,24 @@ module SyntaxHighlight.Line exposing
 -}
 
 import SyntaxHighlight.Style as Style
+import Html
 
 
 {-| A line holds information about its fragments and if is highlighted in any way.
 -}
-type alias Line =
-    { fragments : List Fragment
+type alias Line msg =
+    { fragments : List (Fragment msg)
     , highlight : Maybe Highlight
     }
 
 
 {-| A fragment holds information about the text being styled, the style and additional class to be applied.
 -}
-type alias Fragment =
+type alias Fragment msg =
     { text : String
     , requiredStyle : Style.Required
     , additionalClass : String
+    , additionalAttributes : List (Html.Attribute msg)
     }
 
 
@@ -40,7 +42,7 @@ type Highlight
     | Del
 
 
-highlightLines : Maybe Highlight -> Int -> Int -> List Line -> List Line
+highlightLines : Maybe Highlight -> Int -> Int -> List (Line msg) -> List (Line msg)
 highlightLines maybeHighlight start end lines =
     let
         length =
@@ -63,7 +65,7 @@ highlightLines maybeHighlight start end lines =
     List.indexedMap (highlightLinesHelp maybeHighlight start_ end_) lines
 
 
-highlightLinesHelp : Maybe Highlight -> Int -> Int -> Int -> Line -> Line
+highlightLinesHelp : Maybe Highlight -> Int -> Int -> Int -> (Line msg) -> (Line msg)
 highlightLinesHelp maybeHighlight start end index line =
     if index >= start && index < end then
         { line | highlight = maybeHighlight }

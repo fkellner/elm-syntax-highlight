@@ -10,7 +10,7 @@ import SyntaxHighlight.Style exposing (Required(..))
 -- Html
 
 
-toBlockHtml : Maybe Int -> List Line -> Html msg
+toBlockHtml : Maybe Int -> List (Line msg) -> Html msg
 toBlockHtml maybeStart lines =
     case maybeStart of
         Nothing ->
@@ -25,7 +25,7 @@ toBlockHtml maybeStart lines =
                 |> pre [ class "elmsh" ]
 
 
-lineView : Int -> Int -> Line -> Html msg
+lineView : Int -> Int -> (Line msg) -> Html msg
 lineView start index { fragments, highlight } =
     div
         [ classList
@@ -39,7 +39,7 @@ lineView start index { fragments, highlight } =
         (List.map fragmentView fragments)
 
 
-toInlineHtml : List Line -> Html msg
+toInlineHtml : List (Line msg) -> Html msg
 toInlineHtml lines =
     lines
         |> List.map
@@ -62,14 +62,14 @@ toInlineHtml lines =
         |> code [ class "elmsh" ]
 
 
-fragmentView : Fragment -> Html msg
-fragmentView { text, requiredStyle, additionalClass } =
+fragmentView : Fragment msg -> Html msg
+fragmentView { text, requiredStyle, additionalClass, additionalAttributes } =
     if requiredStyle == Default && String.isEmpty additionalClass then
         Html.text text
 
     else
         span
-            [ classList
+            ([ classList
                 [ ( requiredStyleToString requiredStyle
                   , requiredStyle /= Default
                   )
@@ -77,7 +77,7 @@ fragmentView { text, requiredStyle, additionalClass } =
                   , additionalClass /= ""
                   )
                 ]
-            ]
+            ] ++ additionalAttributes)
             [ Html.text text ]
 
 
@@ -117,7 +117,7 @@ requiredStyleToString required =
 -- Static Html
 
 
-toStaticBlockHtml : Maybe Int -> List Line -> String
+toStaticBlockHtml : Maybe Int -> List (Line msg) -> String
 toStaticBlockHtml maybeStart lines =
     case maybeStart of
         Nothing ->
@@ -134,7 +134,7 @@ toStaticBlockHtml maybeStart lines =
                 ]
 
 
-staticLineView : Int -> Int -> Line -> String
+staticLineView : Int -> Int -> (Line msg) -> String
 staticLineView start index { fragments, highlight } =
     String.concat
         [ "<div class=\""
@@ -150,7 +150,7 @@ staticLineView start index { fragments, highlight } =
         ]
 
 
-toStaticInlineHtml : List Line -> String
+toStaticInlineHtml : List (Line msg) -> String
 toStaticInlineHtml lines =
     String.concat
         [ "<code class=\"elmsh\">"
@@ -179,7 +179,7 @@ toStaticInlineHtml lines =
         ]
 
 
-staticFragmentView : Fragment -> String
+staticFragmentView : (Fragment msg) -> String
 staticFragmentView { text, requiredStyle, additionalClass } =
     if requiredStyle == Default && String.isEmpty additionalClass then
         text
@@ -229,7 +229,7 @@ type alias ConsoleOptions =
     }
 
 
-toConsole : ConsoleOptions -> List Line -> List String
+toConsole : ConsoleOptions -> List (Line msg) -> List String
 toConsole options lines =
     List.map
         (\{ highlight, fragments } ->
@@ -258,7 +258,7 @@ toConsole options lines =
         lines
 
 
-consoleFragmentView : ConsoleOptions -> Fragment -> String
+consoleFragmentView : ConsoleOptions -> Fragment msg -> String
 consoleFragmentView options { text, requiredStyle, additionalClass } =
     case requiredStyle of
         Default ->
