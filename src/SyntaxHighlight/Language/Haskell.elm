@@ -500,7 +500,7 @@ quote =
 
 isStringLiteralChar : Char -> Bool
 isStringLiteralChar c =
-    c == '"' || c == '\''
+    c == '"'
 
 
 
